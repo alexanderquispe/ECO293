@@ -1,0 +1,241 @@
+```{r}
+install.packages('MatchIt')
+install.packages('optmatch')
+```
+```{r}
+library('MatchIt')
+library('optmatch')
+data('lalonde')
+head(lalonde)
+#?lalonde
+```
+```{r}
+sum(lalonde$treat)
+```
+#The number of total treated cases is 185.
+
+```{r}
+mean(lalonde[which(lalonde$treat==0),'re78'])
+```
+#The outcome variable in the control group is $6984.17.
+
+
+```{r}
+mean(lalonde[which(lalonde$treat==1),'re78'])
+```
+#The outcome variable in the treatment group is $6349.144.
+
+#Estimating propensity score using logistic regression
+```{r}
+PS_logit <- glm(treat ~ age + educ+race+married+nodegree+re74+re75, data = lalonde, family=binomial)
+PS_Scores = fitted(PS_logit)
+head(PS_Scores)
+```
+
+
+#Create mutually exclusive strata based on estimated PS
+```{r}
+lalonde$PS_Scores <- PS_Scores
+lalonde
+```
+```{r}
+# create strata 
+Quintiles <- quantile(lalonde$PS_Scores, prob=seq(from=0,to=1,by=0.2),na.rm=TRUE)
+lalonde$PS_Stratum <- cut(lalonde$PS_Scores, breaks = Quintiles, labels = 1:5, include.lowest = TRUE)
+lalonde
+```
+
+# Step 3 & 4: Group treated and control units into each stratum; Within each stratum, we calculate the difference in means between the treated and control
+
+```{r}
+# Fifth Stratum: PS_Stratum = 5
+diff_5 = mean(lalonde[which(lalonde$treat==1&lalonde$PS_Stratum==5), 're78'])- mean(lalonde[which(lalonde$treat==0&lalonde$PS_Stratum==5),'re78'])
+
+# Forth Stratum: PS_Stratum = 4
+diff_4 = mean(lalonde[which(lalonde$treat==1&lalonde$PS_Stratum==4), 're78'])- mean(lalonde[which(lalonde$treat==0&lalonde$PS_Stratum==4),'re78'])
+
+# Third Stratum: PS_Stratum = 3
+diff_3 = mean(lalonde[which(lalonde$treat==1&lalonde$PS_Stratum==3), 're78'])- mean(lalonde[which(lalonde$treat==0&lalonde$PS_Stratum==3),'re78'])
+
+# Second Stratum: PS_Stratum = 2
+diff_2 = mean(lalonde[which(lalonde$treat==1&lalonde$PS_Stratum==2), 're78'])- mean(lalonde[which(lalonde$treat==0&lalonde$PS_Stratum==2),'re78'])
+
+# First Stratum: PS_Stratum = 1
+diff_1 = mean(lalonde[which(lalonde$treat==1&lalonde$PS_Stratum==1), 're78'])- mean(lalonde[which(lalonde$treat==0&lalonde$PS_Stratum==1),'re78'])
+```
+
+#To estimate the ATE, we weigh by the number of units in each stratum.
+```{r}
+total_units = nrow(lalonde)
+ATE_1 = diff_1* nrow(lalonde[which(lalonde$PS_Stratum==1),])/total_units
+ATE_2 = diff_2* nrow(lalonde[which(lalonde$PS_Stratum==2),])/total_units
+ATE_3 = diff_3* nrow(lalonde[which(lalonde$PS_Stratum==3),])/total_units
+ATE_4 = diff_4* nrow(lalonde[which(lalonde$PS_Stratum==4),])/total_units
+ATE_5 = diff_5* nrow(lalonde[which(lalonde$PS_Stratum==5),])/total_units
+ATE = ATE_1+ATE_2+ATE_3+ATE_4+ATE_5
+ATE
+```
+```{r}
+mean(lalonde[which(lalonde$treat==1&lalonde$PS_Stratum==1),'re78'])
+```
+```{r}
+mean(lalonde[which(lalonde$treat==0&lalonde$PS_Stratum==1),'re78'])
+```
+
+
+
+#It's interesting to see ATE is negative. It is mostly due to stratrum 1 has a oversized impact on the overall ATE; that is, for the stratrum that is closest to 0 likelihood of enrolling in training programs, the real income of those who enrolled is significantly less than those who are not enrolled. This makes intuitive sense because those who are not enrolled have much higher income than those who enrolled (10467 vs. 0).
+
+#The next reasonable exploration is estimating the effect of ATT.
+
+```{r}
+total_treated_units = nrow(lalonde[which(lalonde$treat==1),])
+ATT_1 = diff_1* nrow(lalonde[which(lalonde$treat==1 & lalonde$PS_Stratum==1),])/total_treated_units
+ATT_2 = diff_2* nrow(lalonde[which(lalonde$treat==1 & lalonde$PS_Stratum==2),])/total_treated_units
+ATT_3 = diff_3* nrow(lalonde[which(lalonde$treat==1 & lalonde$PS_Stratum==3),])/total_treated_units
+ATT_4 = diff_4* nrow(lalonde[which(lalonde$treat==1 & lalonde$PS_Stratum==4),])/total_treated_units
+ATT_5 = diff_5* nrow(lalonde[which(lalonde$treat==1 & lalonde$PS_Stratum==5),])/total_treated_units
+ATT = ATT_1+ATT_2+ATT_3+ATT_4+ATT_5
+ATT
+```
+
+#The ATT is a 1333.05 increase in household income after attending the job training program. The experimental benchmark is $1,794, and the original paper estimates 1,608 using the PS Stratification. The gap is due to some technical details such as ML model choice in estimating PS.
+
+#In case when strata cannot estimate treatment effects, I will adjust the number of strata just so in each stratrum there is meaningfully enough treatment and control observations.
+
+3.
+```{r}
+set.seed(1)
+n = 1000
+p = 20
+X = matrix(rnorm(n * p), n, p)
+propensity = pmax(0.2, pmin(0.8, 0.5 + X[,1]/3))
+W = rbinom(n, 1, propensity)
+Y = pmax(X[,1] + W * X[,2], 0) + rnorm(n)
+```
+
+4. PS using logsitic regression
+```{r}
+library(glmnet)
+logit <- cv.glmnet(x=X, y=W, family="binomial")
+e.hat <- predict(logit, X, s = "lambda.min", type="response")
+```
+
+IWP
+```{r}
+z <- Y * (W/e.hat - (1-W)/(1-e.hat))
+ate.est <- mean(z)
+ate.se <- sd(z) / sqrt(length(z))
+ate.tstat <- ate.est / ate.se
+ate.pvalue <- 2*(pnorm(1 - abs(ate.est/ate.se)))
+ate.results <- c(estimate=ate.est, std.error=ate.se, t.stat=ate.tstat, pvalue=ate.pvalue)
+print(ate.results)
+```
+
+Stratified
+
+
+```{r}
+data <- cbind(X, W, Y)
+df = as.data.frame(data)
+```
+
+```{r}
+# create strata 
+df$e.hat <- e.hat
+df
+Quintiles <- quantile(df$e.hat, prob=seq(from=0,to=1,by=0.2),na.rm=TRUE)
+df$PS_Stratum <- cut(df$e.hat, breaks = Quintiles, labels = 1:5, include.lowest = TRUE)
+```
+```{r}
+# Fifth Stratum: PS_Stratum = 5
+diff_5 = mean(df[which(df$W==1&df$PS_Stratum==5), 'Y']) - mean(df[which(df$W==0&df$PS_Stratum==5), 'Y'])
+
+# Forth Stratum: PS_Stratum = 4
+diff_4 = mean(df[which(df$W==1&df$PS_Stratum==4), 'Y']) - mean(df[which(df$W==0&df$PS_Stratum==4), 'Y'])
+# Third Stratum: PS_Stratum = 3
+diff_3 = mean(df[which(df$W==1&df$PS_Stratum==3), 'Y']) - mean(df[which(df$W==0&df$PS_Stratum==3), 'Y'])
+
+# Second Stratum: PS_Stratum = 2
+diff_2 = mean(df[which(df$W==1&df$PS_Stratum==2), 'Y']) - mean(df[which(df$W==0&df$PS_Stratum==2), 'Y'])
+
+# First Stratum: PS_Stratum = 1
+diff_1 = mean(df[which(df$W==1&df$PS_Stratum==2), 'Y']) - mean(df[which(df$W==0&df$PS_Stratum==2), 'Y'])
+```
+
+#To estimate the ATE, we weigh by the number of units in each stratum.
+```{r}
+total_units = 1000
+ATE_1 = diff_1* nrow(df[which(df$PS_Stratum==1),])/total_units
+ATE_2 = diff_2* nrow(df[which(df$PS_Stratum==2),])/total_units
+ATE_3 = diff_3* nrow(df[which(df$PS_Stratum==3),])/total_units
+ATE_4 = diff_4* nrow(df[which(df$PS_Stratum==4),])/total_units
+ATE_5 = diff_5* nrow(df[which(df$PS_Stratum==5),])/total_units
+ATE = ATE_1+ATE_2+ATE_3+ATE_4+ATE_5
+ATE
+```
+
+
+```{r}
+groundtruth_ATE =  mean(df[which(df$W==1), 'Y']) - mean(df[which(df$W==0), 'Y'])
+groundtruth_ATE
+```
+#I just picked 5 because research shows 5 strata can remove approximately 90% of the bias in the unadjusted estimate (Rosenbaum and Rubin, 1984). And the more strata doesn't always mean the better.
+
+
+#Repeat 20 times, calculate MSE, compare with groundtruth ATE
+```{r}
+SE_IWP = rep(0,20)
+SE_stratified = rep(0,20)
+for (i in 1:20) {
+  #simulate data
+  set.seed(i+1)
+  n = 1000
+  p = 20
+  X = matrix(rnorm(n * p), n, p)
+  propensity = pmax(0.2, pmin(0.8, 0.5 + X[,1]/3))
+  W = rbinom(n, 1, propensity)
+  Y = pmax(X[,1] + W * X[,2], 0) + rnorm(n)
+  
+  #e.hat with logistic regression
+  logit <- cv.glmnet(x=X, y=W, family="binomial")
+  e.hat <- predict(logit, X, s = "lambda.min", type="response")
+  
+  #IWP
+  z <- Y * (W/e.hat - (1-W)/(1-e.hat))
+  ate.est <- mean(z)
+  
+  #stratified
+  ata <- cbind(X, W, Y)
+  df = as.data.frame(data)
+  df$e.hat <- e.hat
+  Quintiles <- quantile(df$e.hat, prob=seq(from=0,to=1,by=0.2),na.rm=TRUE)
+  df$PS_Stratum <- cut(df$e.hat, breaks = Quintiles, labels = 1:5, include.lowest = TRUE)
+  
+  diff_5 = mean(df[which(df$W==1&df$PS_Stratum==5), 'Y']) - mean(df[which(df$W==0&df$PS_Stratum==5), 'Y'])
+  diff_4 = mean(df[which(df$W==1&df$PS_Stratum==4), 'Y']) - mean(df[which(df$W==0&df$PS_Stratum==4), 'Y'])
+  diff_3 = mean(df[which(df$W==1&df$PS_Stratum==3), 'Y']) - mean(df[which(df$W==0&df$PS_Stratum==3), 'Y'])
+  diff_2 = mean(df[which(df$W==1&df$PS_Stratum==2), 'Y']) - mean(df[which(df$W==0&df$PS_Stratum==2), 'Y'])
+  diff_1 = mean(df[which(df$W==1&df$PS_Stratum==2), 'Y']) - mean(df[which(df$W==0&df$PS_Stratum==2), 'Y'])
+  
+  total_units = 1000
+  ATE_1 = diff_1* nrow(df[which(df$PS_Stratum==1),])/total_units
+  ATE_2 = diff_2* nrow(df[which(df$PS_Stratum==2),])/total_units
+  ATE_3 = diff_3* nrow(df[which(df$PS_Stratum==3),])/total_units
+  ATE_4 = diff_4* nrow(df[which(df$PS_Stratum==4),])/total_units
+  ATE_5 = diff_5* nrow(df[which(df$PS_Stratum==5),])/total_units
+  ATE = ATE_1+ATE_2+ATE_3+ATE_4+ATE_5
+  
+  #groundtruth
+  groundtruth_ATE = mean(df[which(df$W==1), 'Y']) - mean(df[which(df$W==0), 'Y'])
+  SE_IWP[i] = (ate.est-groundtruth_ATE)^2
+  SE_stratified[i] = (ATE-groundtruth_ATE)^2
+}
+
+print(mean(SE_IWP))
+print(mean(SE_stratified))
+```
+#IWP yields a MSE of 0.136 and the stratified yields 0.00238, which is 57 times larger.
+
+#The stratified method recovers more accurate ATE estimation in terms of MSE. This is because the precise matching process increases imbalance, inefficiency, model dependence, bias and fails to reduce the imbalance (King and Nielsen, 2019). In contrast, PS Stratification offers a better alternative to PS Matching by averaging across a set of quasi-RCTs within each stratum and adjusting for the covariate imbalance by tweaking the score.
+
