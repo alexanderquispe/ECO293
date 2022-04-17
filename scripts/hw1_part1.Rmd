@@ -1,0 +1,212 @@
+---
+title: "HW1 Part 1"
+author: "Sibei Zhang, Richard Tang & Alexander Quispe"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r lib, include=FALSE}
+library(dplyr)
+library(haven)
+library(tidyverse)
+library(lmtest)
+library(sandwich)
+library(grf)
+library(glmnet)
+library(splines)
+library(ggplot2)
+library(reshape2)
+```
+
+
+```{r}
+star <- read_sav("C:/Users/Alexander/Documents/GitHub/ECO293/data/Project_STAR/PROJECT_STAR/STAR_Students.sav")
+names(star)<-tolower(names(star))
+options(stringAsFactors=FALSE)
+```
+
+```{r drop_relabel}
+star <- star[!(star$g1classtype== 3 ),]
+star$g1classtype[star$g1classtype == 1] <- 1
+star$g1classtype[star$g1classtype == 2] <- 0
+```
+
+# 1. average treatment effect in the randomized experiment
+
+```{r ate_ci}
+#ate
+ate_est <- mean(star$g1tmathss[star$g1classtype==1], na.rm = TRUE) - mean(star$g1tmathss[star$g1classtype==0], na.rm = TRUE)
+
+ate_est
+
+#confidence intervals
+ate_se <- sqrt(var(star$g1tmathss[star$g1classtype == 1], na.rm = TRUE) / sum(star$g1classtype == 1, na.rm = TRUE) + var(star$g1tmathss[star$g1classtype == 0], na.rm = TRUE) / sum(star$g1classtype == 0, na.rm = TRUE))
+
+ate_se
+
+print(paste0("95% CI: ", round(ate_est),
+" +/- ", round(1.96 * ate_se)))
+```
+
+
+# 2 Describe your method(s) for systematically deleting some observations as a function of X’s
+
+```{r drop_obs}
+names(star)[names(star) == 'g1classtype'] <- "W"
+# copying old dataset, just in case
+data.exp <- star
+data <- star
+
+# defining the group that we will be dropped with some high probability
+grp <- ((data$W == 1) &  # if treated AND...
+        (
+            (data$race == 2) |     # belongs an older group OR
+            (data$g4surban == 3)   # more conservative
+        )) | # OR
+        ((data$W == 0) &  # if untreated AND...
+        (
+            (data$race == 1 ) |     # belongs a younger group OR
+            (data$g4surban == 4)   # more liberal
+        )) 
+
+# Individuals in the group above have a small chance of being kept in the sample
+prob.keep <- ifelse(grp, .15, .85)
+keep.idx <- as.logical(rbinom(n=nrow(data), prob=prob.keep, size = 1))
+# Dropping
+star <- data[keep.idx,]
+```
+
+# 2.1 new difference-in-means point estimate of the treatment effect is significantly different
+
+```{r new_ate}
+#ate
+ate_est <- mean(star$g1tmathss[star$W==1], na.rm = TRUE) - mean(star$g1tmathss[star$W==0], na.rm = TRUE)
+
+ate_est
+
+#confidence intervals
+ate_se <- sqrt(var(star$g1tmathss[star$W == 1], na.rm = TRUE) / sum(star$W == 1, na.rm = TRUE) + var(star$g1tmathss[star$W == 0], na.rm = TRUE) / sum(star$W == 0, na.rm = TRUE))
+
+ate_se
+
+print(paste0("95% CI: ", round(ate_est),
+" +/- ", round(1.96 * ate_se)))
+```
+
+# 2.2 Propensity Score
+
+
+```{r pscore}
+star_2 <- star[complete.cases(star$gender, star$race, star$flagsgk, star$gktrace, star$g4surban, star$W, star$g1tmathss),]
+
+
+# Additional covariates
+covariates <- c("gender", "race", "flagsgk", "gktrace", "g4surban")
+
+# Estimate the propensity score e(X) via logistic regression using splines
+fmla <- as.formula(paste0("~", paste0("bs(", covariates, ", df=3)", collapse="+")))
+Z <- star_2$W
+Y <- star_2$g1tmathss
+XX <- model.matrix(fmla, star_2)
+logit <- cv.glmnet(x=XX, y=Z, family="binomial")
+e.hat <- predict(logit, XX, s = "lambda.min", type="response")
+
+# Histogram 
+hist(e.hat) 
+
+```
+
+# 3.1 The difference in means estimator (which would be appropriate in an RCT).
+
+```{r ate_pscore}
+#ate
+ate_est <- mean(star_2$g1tmathss[star_2$W==1], na.rm = TRUE) - mean(star_2$g1tmathss[star_2$W==0], na.rm = TRUE)
+
+ate_est
+
+#confidence intervals
+ate_se <- sqrt(var(star_2$g1tmathss[star_2$W == 1], na.rm = TRUE) / sum(star_2$W == 1, na.rm = TRUE) + var(star_2$g1tmathss[star_2$W == 0], na.rm = TRUE) / sum(star_2$W == 0, na.rm = TRUE))
+
+ate_se
+
+print(paste0("95% CI: ", round(ate_est),
+" +/- ", round(1.96 * ate_se)))
+
+```
+
+# 3.2  Simple linear regression, i.e., fit Y ~ X + W and interpret the W-coefficient as the ATE.
+
+
+```{r ols}
+fmla <- g1tmathss ~ (W + gender + race + flagsgk + gktrace+ g4surban)
+regbasic <- lm(fmla, data=star_2)
+summary(regbasic) 
+ols <- lm(fmla, data=star_2)
+coeftest(ols, vcov=vcovHC(ols, type='HC2'))[2,]
+```
+
+
+# 3.3 AIPW with cross-fitting, using a machine learning method of your choice.
+
+```{r aipw}
+data <- star_2
+# Available in randomized settings and observational settings with unconfoundedness+overlap
+
+# A list of vectors indicating the left-out subset
+n <- nrow(data)
+n.folds <- 5
+indices <- split(seq(n), sort(seq(n) %% n.folds))
+
+# Preparing data
+W <- data$W
+Y <- data$g1tmathss
+covariates <- c("gender", "race", "flagsgk", "gktrace", "g4surban")
+
+# Matrix of (transformed) covariates used to estimate E[Y|X,W]
+fmla.xw <- formula(paste("~ 0 +", paste0("bs(", covariates, ", df=3)", "*", W, collapse=" + ")))
+XW <- model.matrix(fmla.xw, data)
+# Matrix of (transformed) covariates used to predict E[Y|X,W=w] for each w in {0, 1}
+data.1 <- data
+data.1$W <- 1
+XW1 <- model.matrix(fmla.xw, data.1)  # setting W=1
+data.0 <- data
+data.0$W <- 0
+XW0 <- model.matrix(fmla.xw, data.0)  # setting W=0
+
+# Matrix of (transformed) covariates used to estimate and predict e(X) = P[W=1|X]
+fmla.x <- formula(paste(" ~ 0 + ", paste0("bs(", covariates, ", df=3)", collapse=" + ")))
+XX <- model.matrix(fmla.x, data)
+
+
+# # (Optional) Not penalizing the main effect (the coefficient on W)
+penalty.factor <- rep(1, ncol(XW))
+ #penalty.factor[colnames(XW) == W] <- 0
+
+# Cross-fitted estimates of E[Y|X,W=1], E[Y|X,W=0] and e(X) = P[W=1|X]
+mu.hat.1 <- rep(NA, n)
+mu.hat.0 <- rep(NA, n)
+e.hat <- rep(NA, n)
+for (idx in indices) {
+  # Estimate outcome model and propensity models
+  # Note how cross-validation is done (via cv.glmnet) within cross-fitting! 
+  outcome.model <- cv.glmnet(x=XW[-idx,], y=Y[-idx], family="gaussian", penalty.factor=penalty.factor)
+  propensity.model <- cv.glmnet(x=XX[-idx,], y=W[-idx], family="binomial")
+
+  # Predict with cross-fitting
+  mu.hat.1[idx] <- predict(outcome.model, newx=XW1[idx,], type="response")
+  mu.hat.0[idx] <- predict(outcome.model, newx=XW0[idx,], type="response")
+  e.hat[idx] <- predict(propensity.model, newx=XX[idx,], type="response")
+}
+
+# Commpute the summand in AIPW estimator
+aipw.scores <- (mu.hat.1 - mu.hat.0
+                + W / e.hat * (Y -  mu.hat.1)
+                - (1 - W) / (1 - e.hat) * (Y -  mu.hat.0))
+
+# Tally up results
+ate.aipw.est <- mean(aipw.scores)
+ate.aipw.se <- sd(aipw.scores) / sqrt(n)
+ate.aipw.tstat <- ate.aipw.est / ate.aipw.se
+ate.aipw.pvalue <- 2*(pnorm(1 - abs(ate.aipw.tstat)))
+ate.aipw.results <- c(estimate=ate.aipw.est, std.error=ate.aipw.se, t.stat=ate.aipw.tstat, pvalue=ate.aipw.pvalue)
+print(ate.aipw.results)
+```
