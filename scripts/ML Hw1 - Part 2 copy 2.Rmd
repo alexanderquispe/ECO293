@@ -5,6 +5,7 @@ install.packages('optmatch')
 ```{r}
 library('MatchIt')
 library('optmatch')
+library(readxl)
 data('lalonde')
 head(lalonde)
 #?lalonde
