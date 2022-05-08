@@ -1,0 +1,529 @@
+---
+title: "HW02"
+Author: "Sibei Zhang, Richard Tang & Alexander Quispe"
+---
+
+```{r}
+library(haven)
+library(dplyr)
+library(haven)
+library(tidyverse)
+library(lmtest)
+library(sandwich)
+library(grf)
+library(glmnet)
+library(splines)
+library(ggplot2)
+library(reshape2)
+```
+
+
+## Part I: Evaluating Treatment Heterogeneity
+
+### Question 1
+
+```{r}
+library(grf)
+trueATE_1 = rep(0,20)
+trueATE_2 = rep(0,20)
+trueATE_3 = rep(0,20)
+trueATE_4 = rep(0,20)
+avgCATE_1 = rep(0,20)
+avgCATE_2 = rep(0,20)
+avgCATE_3 = rep(0,20)
+avgCATE_4 = rep(0,20)
+avgAIPW_1 = rep(0,20)
+avgAIPW_2 = rep(0,20)
+avgAIPW_3 = rep(0,20)
+avgAIPW_4 = rep(0,20)
+
+for (i in 1:20) {
+  #simulate data
+  set.seed(i+1)
+  n = 8000
+  p = 6
+  taufn = function(x){1/3}
+  X = matrix(rnorm(n * p), n, p)
+  tau = apply(X, 1, taufn)
+  W = rbinom(n, 1, 1/(1 + exp(-X[,1] / 2)))
+  Y = pmax(0, X[,1] / 2 + X[,2]) + W * tau + rnorm(n)
+
+  #Train a causal forest and compute(out-of-bag) CATE estimates on the training set
+  c.forest <- causal_forest(X, Y, W)
+  
+  # Predict on out-of-bag training samples.
+  c.pred <- predict(c.forest)
+  
+  #dataframe, then break into quartiles
+  simu_data <- data.frame(Y, X, W, tau, c.pred)
+  quartiles <- quantile(simu_data$predictions, prob=seq(from=0,to=1,by=0.25),na.rm=TRUE)
+  simu_data$quartiles <- cut(simu_data$predictions, breaks = quartiles, labels = 1:4, include.lowest = TRUE)
+  
+  #appending many treatment effects
+  trueATE_1[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == '1'), 'tau'])
+  trueATE_2[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == '1'), 'tau'])
+  trueATE_3[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == '1'), 'tau'])
+  trueATE_4[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == '1'), 'tau'])
+  #estimated CATE by causal forest
+  avgCATE_1[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == 1), 'predictions'])
+  avgCATE_2[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == 2), 'predictions'])
+  avgCATE_3[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == 3), 'predictions'])
+  avgCATE_4[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == 4), 'predictions'])
+ 
+}
+# a) True ATE per quartile
+print(mean(trueATE_1))
+print(mean(trueATE_2))
+print(mean(trueATE_3))
+print(mean(trueATE_4))
+
+# b) correlation between quarter index and estimated CATE?
+cor.test(c(1,2,3,4), c(mean(avgCATE_1),mean(avgCATE_2),mean(avgCATE_3),mean(avgCATE_4)) , method="pearson")
+
+#AIPW
+AIPW1 = average_treatment_effect(c.forest, method = 'AIPW', subset = simu_data$quartiles == 1)
+AIPW2 = average_treatment_effect(c.forest, method = 'AIPW', subset = simu_data$quartiles == 2)
+AIPW3 = average_treatment_effect(c.forest, method = 'AIPW', subset = simu_data$quartiles == 3)
+AIPW4 = average_treatment_effect(c.forest, method = 'AIPW', subset = simu_data$quartiles == 4)
+
+# c) correlation quarter index and estimated CATE using AIPW?
+cor.test(c(1,2,3,4), c(AIPW1[1],AIPW2[1],AIPW3[1],AIPW4[1]), method="pearson")
+
+# c) Magnitude of standard errors
+print(AIPW1[2])
+print(AIPW2[2])
+print(AIPW3[2])
+print(AIPW4[2])
+
+#Question 3
+test_calibration(c.forest)
+```
+
+## Interpretation
+### a) The true tau in each quartile is 1/3.
+### b) There is an extremely strong correlation with quartile index and estimated CATE in each quartile because this is how the quartile index was generated (by ascending out-of-bag CATE).
+### c) There is no statistically significant correlation found with quartile index and estiamted per-quartile CATE using AIPW. The magnitude of the standard error is extremely small compared to the estimation (0.333).
+
+
+### Question 2
+```{r}
+library(grf)
+trueATE_1 = rep(0,20)
+trueATE_2 = rep(0,20)
+trueATE_3 = rep(0,20)
+trueATE_4 = rep(0,20)
+avgCATE_1 = rep(0,20)
+avgCATE_2 = rep(0,20)
+avgCATE_3 = rep(0,20)
+avgCATE_4 = rep(0,20)
+avgAIPW_1 = rep(0,20)
+avgAIPW_2 = rep(0,20)
+avgAIPW_3 = rep(0,20)
+avgAIPW_4 = rep(0,20)
+
+for (i in 1:20) {
+  #simulate data
+  set.seed(i+1)
+  n = 8000
+  p = 6
+  taufn = function(x) { 1 / (1 + exp(-x[2]/2)) }
+  X = matrix(rnorm(n * p), n, p)
+  tau = apply(X, 1, taufn)
+  W = rbinom(n, 1, 1/(1 + exp(-X[,1] / 2)))
+  Y = pmax(0, X[,1] / 2 + X[,2]) + W * tau + rnorm(n)
+
+  #Train a causal forest and compute(out-of-bag) CATE estimates on the training set
+  c.forest <- causal_forest(X, Y, W)
+  
+  # Predict on out-of-bag training samples.
+  c.pred <- predict(c.forest)
+  
+  #dataframe, then break into quartiles
+  simu_data <- data.frame(Y, X, W, tau, c.pred)
+  quartiles <- quantile(simu_data$predictions, prob=seq(from=0,to=1,by=0.25),na.rm=TRUE)
+  simu_data$quartiles <- cut(simu_data$predictions, breaks = quartiles, labels = 1:4, include.lowest = TRUE)
+  
+  #appending many treatment effects
+  trueATE_1[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == '1'), 'tau'])
+  trueATE_2[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == '1'), 'tau'])
+  trueATE_3[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == '1'), 'tau'])
+  trueATE_4[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == '1'), 'tau'])
+  #estimated CATE by causal forest
+  avgCATE_1[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == 1), 'predictions'])
+  avgCATE_2[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == 2), 'predictions'])
+  avgCATE_3[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == 3), 'predictions'])
+  avgCATE_4[i] = mean(simu_data[which(simu_data$W==1 & simu_data$quartiles == 4), 'predictions'])
+ 
+}
+# a) True ATE per quartile
+print(mean(trueATE_1))
+print(mean(trueATE_2))
+print(mean(trueATE_3))
+print(mean(trueATE_4))
+
+# b) correlation between quarter index and estimated CATE?
+cor.test(c(1,2,3,4), c(mean(avgCATE_1),mean(avgCATE_2),mean(avgCATE_3),mean(avgCATE_4)) , method="pearson")
+
+#AIPW
+AIPW1 = average_treatment_effect(c.forest, method = 'AIPW', subset = simu_data$quartiles == 1)
+AIPW2 = average_treatment_effect(c.forest, method = 'AIPW', subset = simu_data$quartiles == 2)
+AIPW3 = average_treatment_effect(c.forest, method = 'AIPW', subset = simu_data$quartiles == 3)
+AIPW4 = average_treatment_effect(c.forest, method = 'AIPW', subset = simu_data$quartiles == 4)
+
+# c) correlation quarter index and estimated CATE using AIPW?
+cor.test(c(1,2,3,4), c(AIPW1[1],AIPW2[1],AIPW3[1],AIPW4[1]), method="pearson")
+
+# c) Magnitude of standard errors
+print(AIPW1[2])
+print(AIPW2[2])
+print(AIPW3[2])
+print(AIPW4[2])
+
+#Question 3
+test_calibration(c.forest)
+```
+
+## Interpretation
+### a) The true tau in each quartile is 0.386.
+### b) The answer is the same is Question 1 b). There is an extremely strong correlation with quartile index and estimated CATE in each quartile because this is how the quartile index was generated (by ascending out-of-bag CATE).
+### c) The answer is the same is Question 1 c). There is no statistically significant correlation found with quartile index and estiamted per-quartile CATE using AIPW. The magnitude of the standard error is extremely small compared to the estimation (0.386).
+
+##Question 3
+### According to the test calibration, the quartile estimation yields a beta of 0.355219 with a non-statistically significant p value, whereas the AIPW esitmation yields a beta of 0.881496, which is close to 1, with an extremely statistically significant p value. This suggests the AIPW estimation does a way better job estimating the heterogeneous treatment effect on the test set compared to quartile for which just naively create subgroups according to the magnitude of the estimated CATE.
+
+##Question 4
+### When trying to create subgroups of samples, researchers need to take the propensity score into account as opposed to just divide group based on the magnitude of the CATE as it leads to poor estimation of CATE on the test set.
+
+
+# PART II Heterogeneous Treatment Effects in Observational Studies
+## PART II-1
+### Import Biased Sampling Data
+
+```{r}
+star<- read_sav('../data/Project_STAR/PROJECT_STAR/STAR_Students.sav')
+names(star)<-tolower(names(star))
+
+
+star <- star[!(star$g3classtype== 3),]
+star$g3classtype[star$g3classtype == 1] <- 1
+star$g3classtype[star$g3classtype == 2] <- 0
+
+
+names(star)[names(star) == 'g3classtype'] <- "W"
+names(star)[names(star) == 'g3tmathss'] <- "T"
+
+
+# archive the star data
+data.arc <-star
+
+set.seed(666)
+grp <- ((star$W == 1) &  
+        (
+            (star$race == 2) |     
+            (star$g4surban == 3)   
+        )) | 
+        ((star$W == 0) &  
+        (
+            (star$race == 1 ) |     
+            (star$g4surban == 4)   
+        )) 
+
+prob.keep <- ifelse(grp, .15, .85)
+keep.idx <- as.logical(rbinom(n=nrow(star), prob=prob.keep, size = 1))
+
+# Dropping
+star <- star[keep.idx,]
+
+star<- star%>%filter(!is.na(star$W))
+star<- star%>%filter(!is.na(star$T))
+
+
+# Covariates&fmla
+covariates <- c("gender","race","flagsgk","flagsg1","flagsg2","flaggk","flagg1","flagg2")
+fmla <- as.formula(paste0("~", paste0(covariates, collapse="+")))
+
+star_t <- star[star$W==1, ]
+star_c <- star[star$W==0, ]
+```
+
+### Spliting Training and Testing Data
+
+```{r}
+set.seed(666)
+ind <- sample(nrow(star), 0.7*nrow(star))
+training <- star[ind, ]
+testing <- star[-ind, ]
+
+treatment <- "W"
+outcome <- "T"
+
+W <- star[, treatment]
+W <- unlist(W)
+Y <- star[, outcome]
+Y <- unlist(Y)
+X <- model.matrix(fmla, star)
+
+W_train <- training[, treatment]
+W_train <- unlist(W_train)
+Y_train <- training[, outcome]
+Y_train <- unlist(Y_train)
+X_train <- model.matrix(fmla, training)
+
+W_test <- testing[, treatment]
+W_test <- unlist(W_test)
+Y_test <- testing[, outcome]
+Y_test <- unlist(Y_test)
+X_test <- model.matrix(fmla, testing)
+
+```
+
+### 1a. S-learner strategy
+
+```{r}
+sLearner <- function(X_train, W_train, Y_train, X_test) {
+        sf = regression_forest(cbind(X_train, W_train), Y_train)
+        if (is.null(X_test)) {
+          pred.sf.0 = predict(sf, cbind(X_test, 0))$predictions
+          pred.sf.1 = predict(sf, cbind(X_test, 1))$predictions
+          preds.sf.oob = predict(sf)$predictions
+          pred.sf.0[W==0] = preds.sf.oob[W==0]
+          pred.sf.1[W==1] = preds.sf.oob[W==1]
+          preds.sf = pred.sf.1 - pred.sf.0
+        } else {
+          pred.sf.0 = predict(sf, cbind(X_test, 0))$predictions
+          pred.sf.1 = predict(sf, cbind(X_test, 1))$predictions
+          preds.sf = pred.sf.1 - pred.sf.0
+        }
+        return(preds.sf)
+}
+preds.sf <- sLearner(X_train, W_train, Y_train, X_test)
+
+```
+
+### 1b. T-learner strategy
+
+```{r}
+tLearner <- function(X, W, Y, X_test) {
+        tf0 = regression_forest(X[W==0,], Y[W==0])
+        tf1 = regression_forest(X[W==1,], Y[W==1])
+        if (is.null(X_test)) {
+          tf.preds.0 = predict(tf0, X)$predictions
+          tf.preds.1 = predict(tf1, X)$predictions
+          tf.preds.0[W==0] = predict(tf0)$predictions #OOB
+          tf.preds.1[W==1] = predict(tf1)$predictions #OOB
+          preds.tf = tf.preds.1 - tf.preds.0
+        } else {
+          pred.tf.0 = predict(tf0, X_test)$predictions
+          pred.tf.1 = predict(tf1, X_test)$predictions
+          preds.tf = pred.tf.1 - pred.tf.0
+        }
+        return(preds.tf)
+}
+preds.tf <- tLearner(X_train, W_train, Y_train, X_test)
+```
+
+### 1c. X-learner strategy
+
+```{r}
+xLearner <- function(X, W, Y, X_test, W_test) {
+        tf0 = regression_forest(X[W==0,], Y[W==0])
+        tf1 = regression_forest(X[W==1,], Y[W==1])
+        if (is.null(X_test)) {
+          yhat0 = predict(tf0, X[W==1,])$predictions
+          xf1 = regression_forest(X[W==1,], Y[W==1]-yhat0)
+          xf.preds.1 = predict(xf1, X)$predictions
+          xf.preds.1[W==1] = predict(xf1)$predictions
+          yhat1 = predict(tf1, X[W==0,])$predictions
+          xf0 = regression_forest(X[W==0,], yhat1-Y[W==0])
+          xf.preds.0 = predict(xf0, X)$predictions
+          xf.preds.0[W==0] = predict(xf0)$predictions
+          propf = regression_forest(X, W, tune.parameters = 'all')
+          ehat = predict(propf)$predictions
+          preds.xf = (1 - ehat) * xf.preds.1 + ehat * xf.preds.0
+        } else {
+          yhat0 = predict(tf0, X_test[W_test==1,])$predictions
+          xf1 = regression_forest(X_test[W_test==1,], Y_test[W_test==1]-yhat0)
+          xf.preds.1 = predict(xf1, X_test)$predictions
+          xf.preds.1[W_test==1] = predict(xf1)$predictions
+          yhat1 = predict(tf1, X_test[W_test==0,])$predictions
+          xf0 = regression_forest(X_test[W_test==0,], yhat1-Y_test[W_test==0])
+          xf.preds.0 = predict(xf0, X_test)$predictions
+          xf.preds.0[W_test==0] = predict(xf0)$predictions
+          propf = regression_forest(X_test, W_test, tune.parameters = 'all')
+          ehat = predict(propf)$predictions
+          preds.xf = (1 - ehat) * xf.preds.1 + ehat * xf.preds.0
+        }
+        
+        return(preds.xf)
+}
+preds.xf <- xLearner(X_train, W_train, Y_train, X_test, W_test)
+```
+
+### 1d. Causal Forest strategy
+
+```{r}
+causalForest <- function(X, W, Y, X_test) {
+        W.hat.mod = regression_forest(as.matrix(X), W, tune.parameters = "all")
+        W.hat.rf = W.hat.mod$predictions
+        Y.hat.mod = regression_forest(as.matrix(X), Y, tune.parameters = "all")
+        Y.hat.rf = Y.hat.mod$predictions
+        cf <- causal_forest(as.matrix(X), Y, W, Y.hat = Y.hat.rf, W.hat = W.hat.rf)
+        if (is.null(X_test)) {
+          preds.cf <- predict(cf)$predictions 
+        } else {
+          preds.cf <- predict(cf, X_test)$predictions 
+        }
+        return(preds.cf)
+}
+preds.cf <- causalForest(X_train, W_train, Y_train, X_test)
+```
+
+### Compare 4 strategies
+
+```{r}
+cf.priority <- causal_forest(as.matrix(X_train), Y_train, W_train)
+priority.cate <- predict(cf.priority, X_test)$predictions
+cf.eval <- causal_forest(X_test, Y_test, W_test)
+
+rate1 <- rank_average_treatment_effect(cf.eval, preds.sf, target = "QINI")
+rate2 <- rank_average_treatment_effect(cf.eval, preds.tf, target = "QINI")
+rate3 <- rank_average_treatment_effect(cf.eval, preds.xf, target = "QINI")
+rate4 <- rank_average_treatment_effect(cf.eval, preds.cf, target = "QINI")
+
+plot(rate1, main = "sLearner")
+plot(rate2, main = "tLearner")
+plot(rate3, main = "xLearner")
+plot(rate4, main = "causalForest")
+```
+
+## Part II-2
+
+### 2a. Draw a Random Subset of 400 Observations Using All Methods
+
+```{r}
+set.seed(666)
+star2 <- star[sample(400), ]
+ind <- sample(nrow(star2), 0.7*nrow(star2))
+training <- star2[ind, ]
+testing <- star2[-ind, ]
+
+W_train <- training[, treatment]
+W_train <- unlist(W_train)
+Y_train <- training[, outcome]
+Y_train <- unlist(Y_train)
+X_train <- model.matrix(fmla, training)
+
+W_test <- testing[, treatment]
+W_test <- unlist(W_test)
+Y_test <- testing[, outcome]
+Y_test <- unlist(Y_test)
+X_test <- model.matrix(fmla, testing)
+
+
+preds.sf <- sLearner(X_train, W_train, Y_train, X_test)
+preds.tf <- tLearner(X_train, W_train, Y_train, X_test)
+preds.xf <- xLearner(X_train, W_train, Y_train, X_test, W_test)
+preds.cf <- causalForest(X_train, W_train, Y_train, X_test)
+
+cf.eval <- causal_forest(X_test, Y_test, W_test)
+rate1 <- rank_average_treatment_effect(cf.eval, preds.sf, target = "QINI")
+rate2 <- rank_average_treatment_effect(cf.eval, preds.tf, target = "QINI")
+rate3 <- rank_average_treatment_effect(cf.eval, preds.xf, target = "QINI")
+rate4 <- rank_average_treatment_effect(cf.eval, preds.cf, target = "QINI")
+
+plot(rate1, main = "sLearner")
+plot(rate2, main = "tLearner")
+plot(rate3, main = "xLearner")
+plot(rate4, main = "causalForest")
+```
+
+### 2b. Draw Exactly the Same Number of Treated and Control Units
+
+```{r}
+set.seed(293)
+
+star_t <- star_t[sample(nrow(star_t), 375), ]
+star_c <- star_c[sample(nrow(star_c), 375), ]
+star3 <- rbind(star_t, star_c)
+
+ind <- sample(nrow(star3), 0.7*nrow(star3))
+training <- star3[ind, ]
+testing <- star3[-ind, ]
+
+W_train <- training[, treatment]
+W_train <- unlist(W_train)
+Y_train <- training[, outcome]
+Y_train <- unlist(Y_train)
+X_train <- model.matrix(fmla, training)
+
+W_test <- testing[, treatment]
+W_test <- unlist(W_test)
+Y_test <- testing[, outcome]
+Y_test <- unlist(Y_test)
+X_test <- model.matrix(fmla, testing)
+
+preds.sf <- sLearner(X_train, W_train, Y_train, X_test)
+preds.tf <- tLearner(X_train, W_train, Y_train, X_test)
+preds.xf <- xLearner(X_train, W_train, Y_train, X_test, W_test)
+preds.cf <- causalForest(X_train, W_train, Y_train, X_test)
+
+cf.eval <- causal_forest(X_test, Y_test, W_test)
+rate1 <- rank_average_treatment_effect(cf.eval, preds.sf, target = "QINI")
+rate2 <- rank_average_treatment_effect(cf.eval, preds.tf, target = "QINI")
+rate3 <- rank_average_treatment_effect(cf.eval, preds.xf, target = "QINI")
+rate4 <- rank_average_treatment_effect(cf.eval, preds.cf, target = "QINI")
+
+plot(rate1, main = "sLearner")
+plot(rate2, main = "tLearner")
+plot(rate3, main = "xLearner")
+plot(rate4, main = "causalForest")
+```
+
+### 2c 1.5x more control units than treated units
+
+```{r}
+set.seed(666)
+
+star_t_2 <- star_t[sample(nrow(star_t), 250), ]
+star_c_2 <- star_c[sample(nrow(star_c), 375), ]
+star4 <- rbind(star_t_2, star_c_2)
+
+ind <- sample(nrow(star4), 0.7*nrow(star3))
+training <- star4[ind, ]
+testing <- star4[-ind, ]
+
+
+W_train <- training[, treatment]
+W_train <- unlist(W_train)
+Y_train <- training[, outcome]
+Y_train <- unlist(Y_train)
+X_train <- model.matrix(fmla, training)
+
+W_test <- testing[, treatment]
+W_test <- unlist(W_test)
+Y_test <- testing[, outcome]
+Y_test <- unlist(Y_test)
+X_test <- model.matrix(fmla, testing)
+
+preds.sf <- sLearner(X_train, W_train, Y_train, X_test)
+preds.tf <- tLearner(X_train, W_train, Y_train, X_test)
+preds.xf <- xLearner(X_train, W_train, Y_train, X_test, W_test)
+preds.cf <- causalForest(X_train, W_train, Y_train, X_test)
+
+cf.eval <- causal_forest(X_test, Y_test, W_test)
+rate1 <- rank_average_treatment_effect(cf.eval, preds.sf, target = "QINI")
+rate2 <- rank_average_treatment_effect(cf.eval, preds.tf, target = "QINI")
+rate3 <- rank_average_treatment_effect(cf.eval, preds.xf, target = "QINI")
+rate4 <- rank_average_treatment_effect(cf.eval, preds.cf, target = "QINI")
+
+plot(rate1, main = "sLearner")
+plot(rate2, main = "tLearner")
+plot(rate3, main = "xLearner")
+plot(rate4, main = "causalForest")
+```
+
+```{r}
+
+```
+
+
