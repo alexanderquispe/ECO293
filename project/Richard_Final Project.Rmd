@@ -1,0 +1,49 @@
+---
+title: "Final project"
+output: html_document
+authors: Alex, Richard, Sibei
+---
+```{r}
+data <- read.csv('/Users/chenmingtang/Desktop/Desktop - MacBook Pro (73)/Stanford/spring 2022/ECON293/Final Project/MGTECON634_Project/data/matching_panel5_treat12.csv')
+```
+
+```{r}
+data <- data[complete.cases(data), ]
+```
+
+```{r}
+data
+```
+```{r}
+library('fastDummies')
+data <- dummy_cols(data, select_columns = c('level','sex','clasification'))
+Y <- data$stay
+W <- data$treat12
+covariates <- data[, c('tenured','level_Elementary','level_High-School','level_Kindergarten', 'age', 'sex_FEMALE','sex_MALE','clasification_completo','clasification_multigrado','clasification_unidocente','cpwater','cpelec')]
+X <- as.matrix(covariates)
+```
+
+#Step 1: Run Simple ATE using OLS
+```{r}
+#tenured + level + sex + age + clasification + cpwater + cpelec
+lmodel <- lm(Y ~ W + X)
+summary(lmodel)
+```
+
+#Step 2: Run Causal Tree
+```{r}
+library(grf)
+c.forest <- causal_forest(X, Y, W)
+```
+
+```{r}
+c.pred <- predict(c.forest)
+c.pred
+```
+```{r}
+df <- data.frame(Y, X, W, c.pred)
+df
+```
+
+
+

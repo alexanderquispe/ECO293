@@ -98,7 +98,7 @@ Y <-star_2[['g1tmathss']]
 X <- model.matrix(fmla, star_2)
 #Z = cbind(X, W)
 
-#Y <- 5*rnorm(nrow(X))
+Y <- 5*rnorm(nrow(X))
 
 
 
